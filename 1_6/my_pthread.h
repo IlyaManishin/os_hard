@@ -11,4 +11,4 @@ int my_pthread_create(my_pthread_t* new_thread,
                       void *arg);
 
 int my_pthread_cancel(my_pthread_t thread_id);
-int my_pthread_join(my_pthread_t thread_id, void **res);
+int my_pthread_join(my_pthread_t thread_id, void **retval);
