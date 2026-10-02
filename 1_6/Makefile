@@ -7,7 +7,7 @@ LIB_NAME = libmy_pthread.a
 LIB_SRC = my_pthread.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
-MAINS = main.c
+MAINS = main.c main1.c
 TARGETS = $(MAINS:.c=)
 
 all: $(LIB_NAME) $(TARGETS)
