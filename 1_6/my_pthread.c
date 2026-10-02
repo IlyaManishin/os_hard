@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -12,7 +13,6 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
-#include <stdatomic.h>
 
 #define sleep_ms(ms) nanosleep(&(struct timespec){.tv_sec = (ms) / 1000, .tv_nsec = ((ms) % 1000) * 1000000L}, NULL)
 
@@ -20,12 +20,15 @@
 #define LINUX_PAGE_SIZE 4096
 #define JOIN_SLEEP_MS 200
 
+#define THREAD_CANCEL_SIGNAL SIGUSR1
 #define THREAD_CLONE_FLAGS (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_PARENT_SETTID)
 
 #define TO_MY_PTHREAD_T(ptr) ((my_pthread_t)(uintptr_t)(ptr))
 #define MAIN_THREAD_T (TO_MY_PTHREAD_T(NULL))
 
 #define TO_THREAD_ARG(thread_id) ((thread_arg_t *)(uintptr_t)thread_id)
+
+static bool isPthreadInit = false;
 
 typedef struct
 {
@@ -46,10 +49,32 @@ static int thread_task(void *arg)
     return 0;
 }
 
+static void thread_cancel_handler(int sig)
+{
+    (void)sig;
+
+    syscall(SYS_exit, 0);
+}
+
+static int my_pthread_init()
+{
+    struct sigaction sa = {0};
+    sa.sa_handler = thread_cancel_handler;
+    int err = sigaction(THREAD_CANCEL_SIGNAL, &sa, NULL);
+    return err;
+}
+
 int my_pthread_create(my_pthread_t *new_thread,
                       void *(*__start_routine)(void *),
                       void *arg)
 {
+    if (!isPthreadInit)
+    {
+        int err = my_pthread_init();
+        if (err != 0)
+            return EAGAIN;
+        isPthreadInit = false;
+    }
     void *stack = mmap(NULL, THREAD_STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
     if (stack == MAP_FAILED)
     {
@@ -100,18 +125,25 @@ int my_pthread_cancel(my_pthread_t thread_id)
         return EINVAL;
     }
 
-    int err = tgkill(getpid(), targ->tid, SIGKILL);
+    int err = tgkill(getpid(), targ->tid, THREAD_CANCEL_SIGNAL);
+    if (err == 0)
+    {
+        targ->is_finished = true;
+        targ->retval = NULL;
+    }
     return (err == 0) ? 0 : errno;
 }
 
 int my_pthread_join(my_pthread_t thread_id, void **retval)
 {
+    printf("asdfsdf\n");
     if (thread_id == MAIN_THREAD_T)
     {
         return EINVAL;
     }
-
+    
     thread_arg_t *targ = TO_THREAD_ARG(thread_id);
+    printf("%d\n", (int)targ->is_finished);
     if (targ->tid == gettid())
     {
         return EDEADLK;

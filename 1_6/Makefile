@@ -18,7 +18,7 @@ $(LIB_NAME): $(LIB_OBJ)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-main%: main%.o $(LIB_NAME)
+$(TARGETS): %: %.o $(LIB_NAME)
 	$(CC) $(CFLAGS) $< -L. -lmy_pthread -o $@
 
 clean:
