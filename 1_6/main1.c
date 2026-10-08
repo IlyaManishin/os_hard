@@ -34,10 +34,10 @@ int main(void)
     my_pthread_t pthread_id;
     int err;
 
-    err = my_pthread_create(&pthread_id, mythread, NULL);
+    err = mythread_create(&pthread_id, mythread, NULL);
     if (err != 0)
     {
-        printf("main: my_pthread_create() failed: %s\n", strerror(err));
+        printf("main: mythread_create() failed: %s\n", strerror(err));
         return EXIT_FAILURE;
     }
 
@@ -53,17 +53,17 @@ int main(void)
 
     void *res = NULL;
     
-    err = my_pthread_join(pthread_id, &res);
+    err = mythread_join(pthread_id, &res);
     if (err != 0)
     {
-        printf("main: my_pthread_join() failed: %s\n", strerror(err));
+        printf("main: mythread_join() failed: %s\n", strerror(err));
         return EXIT_FAILURE;
     }
-    printf("Second join");
-    err = my_pthread_join(pthread_id, &res);
+    printf("Second join:\n");
+    err = mythread_join(pthread_id, &res);
     if (err != 0)
     {
-        printf("main: my_pthread_join() failed: %s\n", strerror(err));
+        printf("main: mythread_join() failed: %s\n", strerror(err));
         return EXIT_FAILURE;
     }
 

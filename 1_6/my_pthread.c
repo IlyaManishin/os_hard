@@ -102,7 +102,7 @@ static int find_free_slot(void)
     return -1;
 }
 
-int my_pthread_create(my_pthread_t *new_thread,
+int mythread_create(my_pthread_t *new_thread,
                       void *(*__start_routine)(void *),
                       void *arg)
 {
@@ -199,7 +199,7 @@ int my_pthread_cancel(my_pthread_t thread_id)
     return (err == 0) ? 0 : errno;
 }
 
-int my_pthread_join(my_pthread_t thread_id, void **retval)
+int mythread_join(my_pthread_t thread_id, void **retval)
 {
     if (thread_id == MAIN_THREAD_T)
     {
@@ -250,7 +250,7 @@ int my_pthread_join(my_pthread_t thread_id, void **retval)
     return res;
 }
 
-int my_pthread_detach(my_pthread_t thread_id)
+int mythread_detach(my_pthread_t thread_id)
 {
     if (thread_id == MAIN_THREAD_T)
     {
@@ -259,7 +259,7 @@ int my_pthread_detach(my_pthread_t thread_id)
     return 0;
 }
 
-void my_pthread_exit(void *retval)
+void mythread_exit(void *retval)
 {
     exit_storage_exit(gettid(), retval);
 }
