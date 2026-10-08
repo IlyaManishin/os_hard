@@ -27,6 +27,7 @@
 #define TO_MY_PTHREAD_T(ptr) ((my_pthread_t)(uintptr_t)(ptr))
 #define MAIN_THREAD_T (TO_MY_PTHREAD_T(NULL))
 
+#define SLOT_BUSY_VAL 1
 #define TO_THREAD_ARG(thread_id) ((pthread_slot_t *)(uintptr_t)thread_id)
 
 static bool isPthreadInit = false;
@@ -70,7 +71,7 @@ static int find_free_slot(void)
     for (int i = 0; i < MAX_THREADS; i++)
     {
         thread_arg_t *expected = NULL;
-        if (atomic_compare_exchange_strong(&thread_table[i], &expected, (thread_arg_t *)1))
+        if (atomic_compare_exchange_strong(&thread_table[i], &expected, (thread_arg_t *)SLOT_BUSY_VAL))
         {
             return i;
         }
