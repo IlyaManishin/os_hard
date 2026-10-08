@@ -1,7 +1,9 @@
 #define _GNU_SOURCE
 
 #include "my_pthread.h"
+#include "exit_storage.h"
 
+#include <setjmp.h>
 #include <errno.h>
 #include <linux/futex.h>
 #include <pthread.h>
@@ -60,13 +62,23 @@ static int thread_clear(thread_arg_t *targ)
 static int thread_task(void *arg)
 {
     thread_arg_t *targ = (thread_arg_t *)arg;
-    targ->retval = targ->start_routine(targ->arg);
+    pid_t tid = gettid();
+
+    jmp_buf env;
+    if (setjmp(env) == 0)
+    {
+        exit_storage_set(tid, env, &targ->retval);
+        targ->retval = targ->start_routine(targ->arg);
+    }
+    exit_storage_remove(tid);
+
     return 0;
 }
 
 static void thread_cancel_handler(int sig)
 {
     (void)sig;
+    exit_storage_remove(gettid());
     syscall(SYS_exit, 0);
 }
 
@@ -138,7 +150,7 @@ int my_pthread_create(my_pthread_t *new_thread,
     targ->arg = arg;
     targ->retval = NULL;
     targ->is_canceled = false;
-    targ->tid = 0;
+    targ->tid = -1;
 
     atomic_store(&thread_table[slot_idx], targ);
 
@@ -245,4 +257,9 @@ int my_pthread_detach(my_pthread_t thread_id)
         return EINVAL;
     }
     return 0;
+}
+
+void my_pthread_exit(void *retval)
+{
+    exit_storage_exit(gettid(), retval);
 }

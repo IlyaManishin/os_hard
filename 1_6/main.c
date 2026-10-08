@@ -20,6 +20,7 @@ void *mythread(void *arg)
 
     sleep(THREAD_SLEEP_SEC);
 
+    my_pthread_exit((void *)(intptr_t)42);
     return (void *)(intptr_t)42;
 }
 

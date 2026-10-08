@@ -4,7 +4,7 @@ RM = rm -f
 CFLAGS = -g -Wall -Wextra -Wpedantic -Werror -I.
 
 LIB_NAME = libmy_pthread.a
-LIB_SRC = my_pthread.c
+LIB_SRC = my_pthread.c exit_storage.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 MAINS = main.c main1.c
