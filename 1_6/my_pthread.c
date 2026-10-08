@@ -17,28 +17,33 @@
 
 #define THREAD_STACK_SIZE (8 * 1024 * 1024)
 #define LINUX_PAGE_SIZE 4096
+#define MAX_THREADS 1024
 
 #define THREAD_CANCEL_SIGNAL SIGUSR1
-#define THREAD_CLONE_FLAGS (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | \
+#define THREAD_CLONE_FLAGS (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |  \
                             CLONE_THREAD | CLONE_SYSVSEM | CLONE_PARENT_SETTID | \
                             CLONE_CHILD_CLEARTID)
 
 #define TO_MY_PTHREAD_T(ptr) ((my_pthread_t)(uintptr_t)(ptr))
 #define MAIN_THREAD_T (TO_MY_PTHREAD_T(NULL))
 
-#define TO_THREAD_ARG(thread_id) ((thread_arg_t *)(uintptr_t)thread_id)
+#define TO_THREAD_ARG(thread_id) ((pthread_slot_t *)(uintptr_t)thread_id)
 
 static bool isPthreadInit = false;
 
 typedef struct
 {
-    pid_t tid;
+    volatile pid_t tid;
     void *stack;
     void *(*start_routine)(void *);
     void *arg;
     void *retval;
     atomic_bool is_canceled;
 } thread_arg_t;
+
+typedef _Atomic(thread_arg_t *) pthread_slot_t;
+
+static pthread_slot_t thread_table[MAX_THREADS] = {NULL};
 
 static int thread_task(void *arg)
 {
@@ -60,6 +65,19 @@ static int my_pthread_init(void)
     return sigaction(THREAD_CANCEL_SIGNAL, &sa, NULL);
 }
 
+static int find_free_slot(void)
+{
+    for (int i = 0; i < MAX_THREADS; i++)
+    {
+        thread_arg_t *expected = NULL;
+        if (atomic_compare_exchange_strong(&thread_table[i], &expected, (thread_arg_t *)1))
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
 int my_pthread_create(my_pthread_t *new_thread,
                       void *(*__start_routine)(void *),
                       void *arg)
@@ -74,16 +92,24 @@ int my_pthread_create(my_pthread_t *new_thread,
         isPthreadInit = true;
     }
 
+    int slot_idx = find_free_slot();
+    if (slot_idx == -1)
+    {
+        return EAGAIN;
+    }
+
     void *stack = mmap(NULL, THREAD_STACK_SIZE, PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
     if (stack == MAP_FAILED)
     {
+        atomic_store(&thread_table[slot_idx], NULL);
         return ENOMEM;
     }
 
     int err = madvise(stack, LINUX_PAGE_SIZE, MADV_GUARD_INSTALL);
     if (err != 0)
     {
+        atomic_store(&thread_table[slot_idx], NULL);
         munmap(stack, THREAD_STACK_SIZE);
         return errno;
     }
@@ -102,6 +128,8 @@ int my_pthread_create(my_pthread_t *new_thread,
     targ->is_canceled = false;
     targ->tid = 0;
 
+    atomic_store(&thread_table[slot_idx], targ);
+
     pid_t tid = clone(thread_task,
                       (void *)stack_top,
                       THREAD_CLONE_FLAGS,
@@ -112,23 +140,30 @@ int my_pthread_create(my_pthread_t *new_thread,
 
     if (tid == -1)
     {
+        atomic_store(&thread_table[slot_idx], NULL);
         munmap(stack, THREAD_STACK_SIZE);
         return EAGAIN;
     }
 
-    *new_thread = TO_MY_PTHREAD_T(stack_top);
+    *new_thread = TO_MY_PTHREAD_T(&thread_table[slot_idx]);
     return 0;
 }
 
 int my_pthread_cancel(my_pthread_t thread_id)
 {
-    thread_arg_t *targ = TO_THREAD_ARG(thread_id);
-    if (targ == NULL)
+    pthread_slot_t *slot = TO_THREAD_ARG(thread_id);
+    if (slot == NULL)
     {
         return EINVAL;
     }
 
-    pid_t target_tid = atomic_load_explicit(&targ->tid, memory_order_acquire);
+    thread_arg_t *targ = atomic_load_explicit(slot, memory_order_acquire);
+    if (targ == NULL)
+    {
+        return ESRCH;
+    }
+
+    pid_t target_tid = targ->tid;
     if (target_tid == 0)
     {
         return ESRCH;
@@ -147,15 +182,27 @@ int my_pthread_join(my_pthread_t thread_id, void **retval)
         return EINVAL;
     }
 
-    thread_arg_t *targ = TO_THREAD_ARG(thread_id);
+    pthread_slot_t *slot = TO_THREAD_ARG(thread_id);
+    if (slot == NULL)
+    {
+        return EINVAL;
+    }
+
+    thread_arg_t *targ = atomic_exchange_explicit(slot, NULL, memory_order_acq_rel);
+    if (targ == NULL)
+    {
+        return EINVAL;
+    }
+
     if (targ->tid == gettid())
     {
+        atomic_store_explicit(slot, targ, memory_order_release);
         return EDEADLK;
     }
 
     while (1)
     {
-        pid_t cur_tid = atomic_load_explicit(&targ->tid, memory_order_acquire);
+        pid_t cur_tid = targ->tid;
         if (cur_tid == 0)
         {
             break;
