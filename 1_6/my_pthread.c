@@ -21,7 +21,7 @@
 
 #define THREAD_CANCEL_SIGNAL SIGUSR1
 #define THREAD_CLONE_FLAGS (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |  \
-                            CLONE_THREAD | CLONE_SYSVSEM | CLONE_PARENT_SETTID | \
+                            CLONE_THREAD | CLONE_SYSVSEM | CLONE_CHILD_SETTID | \
                             CLONE_CHILD_CLEARTID)
 
 #define TO_MY_PTHREAD_T(ptr) ((my_pthread_t)(uintptr_t)(ptr))
@@ -135,7 +135,7 @@ int my_pthread_create(my_pthread_t *new_thread,
                       (void *)stack_top,
                       THREAD_CLONE_FLAGS,
                       targ,
-                      &targ->tid,
+                      NULL,
                       NULL,
                       &targ->tid);
 
