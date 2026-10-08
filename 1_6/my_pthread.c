@@ -20,7 +20,7 @@
 #define MAX_THREADS 1024
 
 #define THREAD_CANCEL_SIGNAL SIGUSR1
-#define THREAD_CLONE_FLAGS (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |  \
+#define THREAD_CLONE_FLAGS (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | \
                             CLONE_THREAD | CLONE_SYSVSEM | CLONE_CHILD_SETTID | \
                             CLONE_CHILD_CLEARTID)
 
@@ -28,7 +28,7 @@
 #define MAIN_THREAD_T (TO_MY_PTHREAD_T(NULL))
 
 #define SLOT_BUSY_VAL 1
-#define TO_THREAD_ARG(thread_id) ((pthread_slot_t *)(uintptr_t)thread_id)
+#define TO_THREAD_SLOT(thread_id) ((pthread_slot_t *)(uintptr_t)thread_id)
 
 static bool isPthreadInit = false;
 
@@ -40,11 +40,22 @@ typedef struct
     void *arg;
     void *retval;
     atomic_bool is_canceled;
+    atomic_bool is_detached;
 } thread_arg_t;
 
 typedef _Atomic(thread_arg_t *) pthread_slot_t;
 
 static pthread_slot_t thread_table[MAX_THREADS] = {NULL};
+
+static int thread_clear(thread_arg_t *targ)
+{
+    void *stack = targ->stack;
+    if (munmap(stack, THREAD_STACK_SIZE) == -1)
+    {
+        return errno;
+    }
+    return 0;
+}
 
 static int thread_task(void *arg)
 {
@@ -152,7 +163,7 @@ int my_pthread_create(my_pthread_t *new_thread,
 
 int my_pthread_cancel(my_pthread_t thread_id)
 {
-    pthread_slot_t *slot = TO_THREAD_ARG(thread_id);
+    pthread_slot_t *slot = TO_THREAD_SLOT(thread_id);
     if (slot == NULL)
     {
         return EINVAL;
@@ -183,7 +194,7 @@ int my_pthread_join(my_pthread_t thread_id, void **retval)
         return EINVAL;
     }
 
-    pthread_slot_t *slot = TO_THREAD_ARG(thread_id);
+    pthread_slot_t *slot = TO_THREAD_SLOT(thread_id);
     if (slot == NULL)
     {
         return EINVAL;
@@ -223,7 +234,15 @@ int my_pthread_join(my_pthread_t thread_id, void **retval)
         }
     }
 
-    void *stack = targ->stack;
-    munmap(stack, THREAD_STACK_SIZE);
+    int res = thread_clear(targ);
+    return res;
+}
+
+int my_pthread_detach(my_pthread_t thread_id)
+{
+    if (thread_id == MAIN_THREAD_T)
+    {
+        return EINVAL;
+    }
     return 0;
 }

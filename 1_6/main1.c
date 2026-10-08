@@ -52,7 +52,14 @@ int main(void)
     }
 
     void *res = NULL;
+    
     err = my_pthread_join(pthread_id, &res);
+    if (err != 0)
+    {
+        printf("main: my_pthread_join() failed: %s\n", strerror(err));
+        return EXIT_FAILURE;
+    }
+    printf("Second join");
     err = my_pthread_join(pthread_id, &res);
     if (err != 0)
     {
