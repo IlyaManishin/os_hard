@@ -3,6 +3,7 @@
 #include "my_pthread.h"
 
 #include <errno.h>
+#include <linux/futex.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -14,14 +15,13 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-#define sleep_ms(ms) nanosleep(&(struct timespec){.tv_sec = (ms) / 1000, .tv_nsec = ((ms) % 1000) * 1000000L}, NULL)
-
 #define THREAD_STACK_SIZE (8 * 1024 * 1024)
 #define LINUX_PAGE_SIZE 4096
-#define JOIN_SLEEP_MS 200
 
 #define THREAD_CANCEL_SIGNAL SIGUSR1
-#define THREAD_CLONE_FLAGS (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_PARENT_SETTID)
+#define THREAD_CLONE_FLAGS (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | \
+                            CLONE_THREAD | CLONE_SYSVSEM | CLONE_PARENT_SETTID | \
+                            CLONE_CHILD_CLEARTID)
 
 #define TO_MY_PTHREAD_T(ptr) ((my_pthread_t)(uintptr_t)(ptr))
 #define MAIN_THREAD_T (TO_MY_PTHREAD_T(NULL))
@@ -37,31 +37,27 @@ typedef struct
     void *(*start_routine)(void *);
     void *arg;
     void *retval;
-    atomic_bool is_finished;
+    atomic_bool is_canceled;
 } thread_arg_t;
 
 static int thread_task(void *arg)
 {
     thread_arg_t *targ = (thread_arg_t *)arg;
-
     targ->retval = targ->start_routine(targ->arg);
-    targ->is_finished = true;
     return 0;
 }
 
 static void thread_cancel_handler(int sig)
 {
     (void)sig;
-
     syscall(SYS_exit, 0);
 }
 
-static int my_pthread_init()
+static int my_pthread_init(void)
 {
     struct sigaction sa = {0};
     sa.sa_handler = thread_cancel_handler;
-    int err = sigaction(THREAD_CANCEL_SIGNAL, &sa, NULL);
-    return err;
+    return sigaction(THREAD_CANCEL_SIGNAL, &sa, NULL);
 }
 
 int my_pthread_create(my_pthread_t *new_thread,
@@ -72,10 +68,14 @@ int my_pthread_create(my_pthread_t *new_thread,
     {
         int err = my_pthread_init();
         if (err != 0)
+        {
             return EAGAIN;
-        isPthreadInit = false;
+        }
+        isPthreadInit = true;
     }
-    void *stack = mmap(NULL, THREAD_STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+
+    void *stack = mmap(NULL, THREAD_STACK_SIZE, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
     if (stack == MAP_FAILED)
     {
         return ENOMEM;
@@ -99,12 +99,15 @@ int my_pthread_create(my_pthread_t *new_thread,
     targ->start_routine = __start_routine;
     targ->arg = arg;
     targ->retval = NULL;
-    targ->is_finished = false;
+    targ->is_canceled = false;
+    targ->tid = 0;
 
     pid_t tid = clone(thread_task,
                       (void *)stack_top,
                       THREAD_CLONE_FLAGS,
                       targ,
+                      &targ->tid,
+                      NULL,
                       &targ->tid);
 
     if (tid == -1)
@@ -125,38 +128,54 @@ int my_pthread_cancel(my_pthread_t thread_id)
         return EINVAL;
     }
 
-    int err = tgkill(getpid(), targ->tid, THREAD_CANCEL_SIGNAL);
-    if (err == 0)
+    pid_t target_tid = atomic_load_explicit(&targ->tid, memory_order_acquire);
+    if (target_tid == 0)
     {
-        targ->is_finished = true;
-        targ->retval = NULL;
+        return ESRCH;
     }
+
+    atomic_store_explicit(&targ->is_canceled, true, memory_order_release);
+
+    int err = tgkill(getpid(), target_tid, THREAD_CANCEL_SIGNAL);
     return (err == 0) ? 0 : errno;
 }
 
 int my_pthread_join(my_pthread_t thread_id, void **retval)
 {
-    printf("asdfsdf\n");
     if (thread_id == MAIN_THREAD_T)
     {
         return EINVAL;
     }
-    
+
     thread_arg_t *targ = TO_THREAD_ARG(thread_id);
-    printf("%d\n", (int)targ->is_finished);
     if (targ->tid == gettid())
     {
         return EDEADLK;
     }
-    while (!atomic_load_explicit(&targ->is_finished, memory_order_acquire))
+
+    while (1)
     {
-        sleep_ms(JOIN_SLEEP_MS);
+        pid_t cur_tid = atomic_load_explicit(&targ->tid, memory_order_acquire);
+        if (cur_tid == 0)
+        {
+            break;
+        }
+        syscall(SYS_futex, &targ->tid, FUTEX_WAIT, cur_tid, NULL, NULL, 0);
     }
 
     if (retval != NULL)
     {
-        *retval = targ->retval;
+        if (atomic_load_explicit(&targ->is_canceled, memory_order_acquire))
+        {
+            *retval = PTHREAD_CANCELED;
+        }
+        else
+        {
+            *retval = targ->retval;
+        }
     }
-    munmap(targ->stack, THREAD_STACK_SIZE);
+
+    void *stack = targ->stack;
+    munmap(stack, THREAD_STACK_SIZE);
     return 0;
 }
