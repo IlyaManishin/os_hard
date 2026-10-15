@@ -13,3 +13,4 @@ int my_pthread_cancel(my_pthread_t thread_id);
 int mythread_join(my_pthread_t thread_id, void **retval);
 int mythread_detach(my_pthread_t thread_id);
 void mythread_exit(void *retval);
+my_pthread_t mythread_self(void);

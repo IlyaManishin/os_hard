@@ -34,18 +34,35 @@
 
 static atomic_bool isPthreadInit = false;
 
-typedef struct
+#define THREAD_UNMAP_AND_EXIT(stack_ptr, stack_size)                \
+    do                                                              \
+    {                                                               \
+        __asm__ volatile(                                           \
+            "syscall\n\t"                                           \
+            "xorl %%edi, %%edi\n\t"                                 \
+            "movl %[nr_exit], %%eax\n\t"                            \
+            "syscall\n\t"                                           \
+            :                                                       \
+            : "a"((long)SYS_munmap), "D"(stack_ptr), "S"(stack_size), \
+              [nr_exit] "i"(SYS_exit)                               \
+            : "rcx", "r11", "memory");                              \
+        __builtin_unreachable();                                    \
+    } while (0)
+
+typedef _Atomic(thread_arg_t *) pthread_slot_t;
+
+struct thread_arg
 {
     volatile pid_t tid;
     void *stack;
     void *(*start_routine)(void *);
     void *arg;
     void *retval;
+    jmp_buf env;
+    pthread_slot_t *slot;
     atomic_bool is_canceled;
     atomic_bool is_detached;
-} thread_arg_t;
-
-typedef _Atomic(thread_arg_t *) pthread_slot_t;
+};
 
 static pthread_slot_t thread_table[MAX_THREADS] = {NULL};
 
@@ -59,18 +76,31 @@ static int thread_clear(thread_arg_t *targ)
     return 0;
 }
 
+static void thread_release(thread_arg_t *targ)
+{
+    exit_storage_remove(gettid());
+
+    if (atomic_load_explicit(&targ->is_detached, memory_order_acquire))
+    {
+        void *stack = targ->stack;
+        size_t stack_size = THREAD_STACK_SIZE;
+
+        atomic_store_explicit(targ->slot, NULL, memory_order_release);
+        syscall(SYS_set_tid_address, NULL);
+        THREAD_UNMAP_AND_EXIT(stack, stack_size);
+    }
+}
+
 static int thread_task(void *arg)
 {
     thread_arg_t *targ = (thread_arg_t *)arg;
-    pid_t tid = gettid();
 
-    jmp_buf env;
-    if (setjmp(env) == 0)
+    exit_storage_set(gettid(), targ);
+    if (setjmp(targ->env) == 0)
     {
-        exit_storage_set(tid, env, &targ->retval);
         targ->retval = targ->start_routine(targ->arg);
     }
-    exit_storage_remove(tid);
+    thread_release(targ);
 
     return 0;
 }
@@ -78,7 +108,11 @@ static int thread_task(void *arg)
 static void thread_cancel_handler(int sig)
 {
     (void)sig;
-    exit_storage_remove(gettid());
+    thread_arg_t *targ = exit_storage_get(gettid());
+    if (targ != NULL)
+    {
+        thread_release(targ);
+    }
     syscall(SYS_exit, 0);
 }
 
@@ -108,12 +142,12 @@ int mythread_create(my_pthread_t *new_thread,
 {
     bool expInit = false;
     bool desInit = true;
-    if (atomic_compare_exchange_strong(&isPthreadInit, &expInit, &desInit))
+    if (atomic_compare_exchange_strong(&isPthreadInit, &expInit, desInit))
     {
         int err = my_pthread_init();
-        atomic_store(&isPthreadInit, false);
         if (err != 0)
         {
+            atomic_store(&isPthreadInit, false);
             return EAGAIN;
         }
     }
@@ -151,7 +185,9 @@ int mythread_create(my_pthread_t *new_thread,
     targ->start_routine = __start_routine;
     targ->arg = arg;
     targ->retval = NULL;
+    targ->slot = &thread_table[slot_idx];
     targ->is_canceled = false;
+    targ->is_detached = false;
     targ->tid = -1;
 
     atomic_store(&thread_table[slot_idx], targ);
@@ -220,6 +256,12 @@ int mythread_join(my_pthread_t thread_id, void **retval)
         return EINVAL;
     }
 
+    if (atomic_load_explicit(&targ->is_detached, memory_order_acquire))
+    {
+        atomic_store_explicit(slot, targ, memory_order_release);
+        return EINVAL;
+    }
+
     if (targ->tid == gettid())
     {
         atomic_store_explicit(slot, targ, memory_order_release);
@@ -258,10 +300,44 @@ int mythread_detach(my_pthread_t thread_id)
     {
         return EINVAL;
     }
+
+    pthread_slot_t *slot = TO_THREAD_SLOT(thread_id);
+    thread_arg_t *targ = atomic_load_explicit(slot, memory_order_acquire);
+    if (targ == NULL)
+    {
+        return EINVAL;
+    }
+
+    if (atomic_exchange_explicit(&targ->is_detached, true, memory_order_acq_rel))
+    {
+        return EINVAL;
+    }
+
+    if (targ->tid == 0)
+    {
+        atomic_store_explicit(slot, NULL, memory_order_release);
+        return thread_clear(targ);
+    }
     return 0;
 }
 
 void mythread_exit(void *retval)
 {
-    exit_storage_exit(gettid(), retval);
+    thread_arg_t *targ = exit_storage_get(gettid());
+    if (targ != NULL)
+    {
+        targ->retval = retval;
+        longjmp(targ->env, 1);
+    }
+    syscall(SYS_exit, 0);
+}
+
+my_pthread_t mythread_self(void)
+{
+    thread_arg_t *targ = exit_storage_get(gettid());
+    if (targ == NULL)
+    {
+        return MAIN_THREAD_T;
+    }
+    return TO_MY_PTHREAD_T(targ->slot);
 }
