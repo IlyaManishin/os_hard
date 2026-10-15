@@ -3,10 +3,10 @@
 #include "my_pthread.h"
 #include "exit_storage.h"
 
-#include <setjmp.h>
 #include <errno.h>
 #include <linux/futex.h>
 #include <pthread.h>
+#include <setjmp.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -32,7 +32,7 @@
 #define SLOT_BUSY_VAL 1
 #define TO_THREAD_SLOT(thread_id) ((pthread_slot_t *)(uintptr_t)thread_id)
 
-static bool isPthreadInit = false;
+static atomic_bool isPthreadInit = false;
 
 typedef struct
 {
@@ -103,17 +103,19 @@ static int find_free_slot(void)
 }
 
 int mythread_create(my_pthread_t *new_thread,
-                      void *(*__start_routine)(void *),
-                      void *arg)
+                    void *(*__start_routine)(void *),
+                    void *arg)
 {
-    if (!isPthreadInit)
+    bool expInit = false;
+    bool desInit = true;
+    if (atomic_compare_exchange_strong(&isPthreadInit, &expInit, &desInit))
     {
         int err = my_pthread_init();
+        atomic_store(&isPthreadInit, false);
         if (err != 0)
         {
             return EAGAIN;
         }
-        isPthreadInit = true;
     }
 
     int slot_idx = find_free_slot();
