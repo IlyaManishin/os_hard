@@ -80,12 +80,12 @@ static void thread_release(thread_arg_t *targ)
 {
     exit_storage_remove(gettid());
 
-    if (atomic_load_explicit(&targ->is_detached, memory_order_acquire))
+    if (atomic_load(&targ->is_detached))
     {
         void *stack = targ->stack;
         size_t stack_size = THREAD_STACK_SIZE;
 
-        atomic_store_explicit(targ->slot, NULL, memory_order_release);
+        atomic_store(targ->slot, NULL);
         syscall(SYS_set_tid_address, NULL);
         THREAD_UNMAP_AND_EXIT(stack, stack_size);
     }
@@ -219,7 +219,7 @@ int my_pthread_cancel(my_pthread_t thread_id)
         return EINVAL;
     }
 
-    thread_arg_t *targ = atomic_load_explicit(slot, memory_order_acquire);
+    thread_arg_t *targ = atomic_load(slot);
     if (targ == NULL)
     {
         return ESRCH;
@@ -231,7 +231,7 @@ int my_pthread_cancel(my_pthread_t thread_id)
         return ESRCH;
     }
 
-    atomic_store_explicit(&targ->is_canceled, true, memory_order_release);
+    atomic_store(&targ->is_canceled, true);
 
     int err = tgkill(getpid(), target_tid, THREAD_CANCEL_SIGNAL);
     return (err == 0) ? 0 : errno;
@@ -250,21 +250,21 @@ int mythread_join(my_pthread_t thread_id, void **retval)
         return EINVAL;
     }
 
-    thread_arg_t *targ = atomic_exchange_explicit(slot, NULL, memory_order_acq_rel);
+    thread_arg_t *targ = atomic_exchange(slot, NULL);
     if (targ == NULL)
     {
         return EINVAL;
     }
 
-    if (atomic_load_explicit(&targ->is_detached, memory_order_acquire))
+    if (atomic_load(&targ->is_detached))
     {
-        atomic_store_explicit(slot, targ, memory_order_release);
+        atomic_store(slot, targ);
         return EINVAL;
     }
 
     if (targ->tid == gettid())
     {
-        atomic_store_explicit(slot, targ, memory_order_release);
+        atomic_store(slot, targ);
         return EDEADLK;
     }
 
@@ -280,7 +280,7 @@ int mythread_join(my_pthread_t thread_id, void **retval)
 
     if (retval != NULL)
     {
-        if (atomic_load_explicit(&targ->is_canceled, memory_order_acquire))
+        if (atomic_load(&targ->is_canceled))
         {
             *retval = PTHREAD_CANCELED;
         }
@@ -302,20 +302,20 @@ int mythread_detach(my_pthread_t thread_id)
     }
 
     pthread_slot_t *slot = TO_THREAD_SLOT(thread_id);
-    thread_arg_t *targ = atomic_load_explicit(slot, memory_order_acquire);
+    thread_arg_t *targ = atomic_load(slot);
     if (targ == NULL)
     {
         return EINVAL;
     }
 
-    if (atomic_exchange_explicit(&targ->is_detached, true, memory_order_acq_rel))
+    if (atomic_exchange(&targ->is_detached, true))
     {
         return EINVAL;
     }
 
     if (targ->tid == 0)
     {
-        atomic_store_explicit(slot, NULL, memory_order_release);
+        atomic_store(slot, NULL);
         return thread_clear(targ);
     }
     return 0;

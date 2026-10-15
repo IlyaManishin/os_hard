@@ -25,7 +25,7 @@ void exit_storage_set(pid_t tid, thread_arg_t *targ)
         if (atomic_compare_exchange_strong(&storage[i].tid, &expected, TID_RESERVED))
         {
             storage[i].targ = targ;
-            atomic_store_explicit(&storage[i].tid, tid, memory_order_release);
+            atomic_store(&storage[i].tid, tid);
             return;
         }
     }
@@ -35,7 +35,7 @@ thread_arg_t *exit_storage_get(pid_t tid)
 {
     for (int i = 0; i < STORAGE_CAPACITY; i++)
     {
-        if (atomic_load_explicit(&storage[i].tid, memory_order_acquire) == tid)
+        if (atomic_load(&storage[i].tid) == tid)
         {
             return storage[i].targ;
         }
@@ -47,10 +47,10 @@ void exit_storage_remove(pid_t tid)
 {
     for (int i = 0; i < STORAGE_CAPACITY; i++)
     {
-        if (atomic_load_explicit(&storage[i].tid, memory_order_acquire) == tid)
+        if (atomic_load(&storage[i].tid) == tid)
         {
             storage[i].targ = NULL;
-            atomic_store_explicit(&storage[i].tid, TID_FREE, memory_order_release);
+            atomic_store(&storage[i].tid, TID_FREE);
             return;
         }
     }
