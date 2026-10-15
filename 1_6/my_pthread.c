@@ -34,19 +34,19 @@
 
 static atomic_bool isPthreadInit = false;
 
-#define THREAD_UNMAP_AND_EXIT(stack_ptr, stack_size)                \
-    do                                                              \
-    {                                                               \
-        __asm__ volatile(                                           \
-            "syscall\n\t"                                           \
-            "xorl %%edi, %%edi\n\t"                                 \
-            "movl %[nr_exit], %%eax\n\t"                            \
-            "syscall\n\t"                                           \
-            :                                                       \
+#define THREAD_UNMAP_AND_EXIT(stack_ptr, stack_size)                  \
+    do                                                                \
+    {                                                                 \
+        __asm__ volatile(                                             \
+            "syscall\n\t"                                             \
+            "xorl %%edi, %%edi\n\t"                                   \
+            "movl %[nr_exit], %%eax\n\t"                              \
+            "syscall\n\t"                                             \
+            :                                                         \
             : "a"((long)SYS_munmap), "D"(stack_ptr), "S"(stack_size), \
-              [nr_exit] "i"(SYS_exit)                               \
-            : "rcx", "r11", "memory");                              \
-        __builtin_unreachable();                                    \
+              [nr_exit] "i"(SYS_exit)                                 \
+            : "rcx", "r11", "memory");                                \
+        __builtin_unreachable();                                      \
     } while (0)
 
 typedef _Atomic(thread_arg_t *) pthread_slot_t;
@@ -141,8 +141,7 @@ int mythread_create(my_pthread_t *new_thread,
                     void *arg)
 {
     bool expInit = false;
-    bool desInit = true;
-    if (atomic_compare_exchange_strong(&isPthreadInit, &expInit, desInit))
+    if (atomic_compare_exchange_strong(&isPthreadInit, &expInit, true))
     {
         int err = my_pthread_init();
         if (err != 0)
@@ -213,12 +212,12 @@ int mythread_create(my_pthread_t *new_thread,
 
 int my_pthread_cancel(my_pthread_t thread_id)
 {
-    pthread_slot_t *slot = TO_THREAD_SLOT(thread_id);
-    if (slot == NULL)
+    if (thread_id == MAIN_THREAD_T)
     {
         return EINVAL;
     }
-
+    
+    pthread_slot_t *slot = TO_THREAD_SLOT(thread_id);
     thread_arg_t *targ = atomic_load(slot);
     if (targ == NULL)
     {
@@ -245,11 +244,6 @@ int mythread_join(my_pthread_t thread_id, void **retval)
     }
 
     pthread_slot_t *slot = TO_THREAD_SLOT(thread_id);
-    if (slot == NULL)
-    {
-        return EINVAL;
-    }
-
     thread_arg_t *targ = atomic_exchange(slot, NULL);
     if (targ == NULL)
     {
