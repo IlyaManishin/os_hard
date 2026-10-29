@@ -31,10 +31,10 @@ void *mythread(void *arg)
 
 int main(void)
 {
-    my_pthread_t pthread_id;
+    mythread_t pthread_id;
     int err;
 
-    err = mythread_create(&pthread_id, mythread, NULL);
+    err = mythread_create(&pthread_id, NULL, mythread, NULL);
     if (err != 0)
     {
         printf("main: mythread_create() failed: %s\n", strerror(err));

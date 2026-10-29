@@ -26,12 +26,12 @@ void *mythread(void *arg)
 
 int main(void)
 {
-    my_pthread_t tid;
+    mythread_t tid;
     int err;
 
     printf("main [%d %d %d]: Hello from main!\n", getpid(), getppid(), gettid());
 
-    err = mythread_create(&tid, mythread, NULL);
+    err = mythread_create(&tid, NULL, mythread, NULL);
     if (err != 0)
     {
         printf("main: mythread_create() failed: %s\n", strerror(err));

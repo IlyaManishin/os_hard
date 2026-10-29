@@ -3,14 +3,16 @@
 #include "stdio.h"
 #include "stdlib.h"
 
-typedef unsigned long int my_pthread_t;
+typedef unsigned long int mythread_t;
+typedef unsigned long int mythread_attr_t;
 
-int mythread_create(my_pthread_t* new_thread,
-                      void *(*__start_routine)(void *),
-                      void *arg);
+int mythread_create(mythread_t *new_thread,
+                    const mythread_attr_t *attr,
+                    void *(*__start_routine)(void *),
+                    void *arg);
 
-int my_pthread_cancel(my_pthread_t thread_id);
-int mythread_join(my_pthread_t thread_id, void **retval);
-int mythread_detach(my_pthread_t thread_id);
+int my_pthread_cancel(mythread_t thread_id);
+int mythread_join(mythread_t thread_id, void **retval);
+int mythread_detach(mythread_t thread_id);
 void mythread_exit(void *retval);
-my_pthread_t mythread_self(void);
+mythread_t mythread_self(void);

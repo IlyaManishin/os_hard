@@ -26,8 +26,8 @@
                             CLONE_THREAD | CLONE_SYSVSEM | CLONE_CHILD_SETTID | \
                             CLONE_CHILD_CLEARTID)
 
-#define TO_MY_PTHREAD_T(ptr) ((my_pthread_t)(uintptr_t)(ptr))
-#define MAIN_THREAD_T (TO_MY_PTHREAD_T(NULL))
+#define TO_MYTHREAD_T(ptr) ((mythread_t)(uintptr_t)(ptr))
+#define MAIN_THREAD_T (TO_MYTHREAD_T(NULL))
 
 #define SLOT_BUSY_VAL 1
 #define TO_THREAD_SLOT(thread_id) ((pthread_slot_t *)(uintptr_t)thread_id)
@@ -136,10 +136,12 @@ static int find_free_slot(void)
     return -1;
 }
 
-int mythread_create(my_pthread_t *new_thread,
+int mythread_create(mythread_t *new_thread,
+                    const mythread_attr_t *attr,
                     void *(*__start_routine)(void *),
                     void *arg)
 {
+    (void)attr;
     bool expInit = false;
     if (atomic_compare_exchange_strong(&isPthreadInit, &expInit, true))
     {
@@ -206,11 +208,11 @@ int mythread_create(my_pthread_t *new_thread,
         return EAGAIN;
     }
 
-    *new_thread = TO_MY_PTHREAD_T(&thread_table[slot_idx]);
+    *new_thread = TO_MYTHREAD_T(&thread_table[slot_idx]);
     return 0;
 }
 
-int my_pthread_cancel(my_pthread_t thread_id)
+int my_pthread_cancel(mythread_t thread_id)
 {
     if (thread_id == MAIN_THREAD_T)
     {
@@ -236,7 +238,7 @@ int my_pthread_cancel(my_pthread_t thread_id)
     return (err == 0) ? 0 : errno;
 }
 
-int mythread_join(my_pthread_t thread_id, void **retval)
+int mythread_join(mythread_t thread_id, void **retval)
 {
     if (thread_id == MAIN_THREAD_T)
     {
@@ -288,7 +290,7 @@ int mythread_join(my_pthread_t thread_id, void **retval)
     return res;
 }
 
-int mythread_detach(my_pthread_t thread_id)
+int mythread_detach(mythread_t thread_id)
 {
     if (thread_id == MAIN_THREAD_T)
     {
@@ -326,12 +328,12 @@ void mythread_exit(void *retval)
     syscall(SYS_exit, 0);
 }
 
-my_pthread_t mythread_self(void)
+mythread_t mythread_self(void)
 {
     thread_arg_t *targ = exit_storage_get(gettid());
     if (targ == NULL)
     {
         return MAIN_THREAD_T;
     }
-    return TO_MY_PTHREAD_T(targ->slot);
+    return TO_MYTHREAD_T(targ->slot);
 }
