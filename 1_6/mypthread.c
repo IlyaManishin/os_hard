@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
 
-#include "my_pthread.h"
+#include "mypthread.h"
 #include "exit_storage.h"
 
 #include <errno.h>
