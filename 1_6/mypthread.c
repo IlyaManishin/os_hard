@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 
-#include "mypthread.h"
 #include "exit_storage.h"
+#include "my_pthread.h"
 
 #include <errno.h>
 #include <linux/futex.h>
@@ -26,8 +26,8 @@
                             CLONE_THREAD | CLONE_SYSVSEM | CLONE_CHILD_SETTID | \
                             CLONE_CHILD_CLEARTID)
 
-#define TO_MYTHREAD_T(ptr) ((mythread_t)(uintptr_t)(ptr))
-#define MAIN_THREAD_T (TO_MYTHREAD_T(NULL))
+#define TO_MY_PTHREAD_T(ptr) ((mythread_t)(uintptr_t)(ptr))
+#define MAIN_THREAD_T (TO_MY_PTHREAD_T(NULL))
 
 #define SLOT_BUSY_VAL 1
 #define TO_THREAD_SLOT(thread_id) ((pthread_slot_t *)(uintptr_t)thread_id)
@@ -142,6 +142,7 @@ int mythread_create(mythread_t *new_thread,
                     void *arg)
 {
     (void)attr;
+
     bool expInit = false;
     if (atomic_compare_exchange_strong(&isPthreadInit, &expInit, true))
     {
@@ -208,17 +209,17 @@ int mythread_create(mythread_t *new_thread,
         return EAGAIN;
     }
 
-    *new_thread = TO_MYTHREAD_T(&thread_table[slot_idx]);
+    *new_thread = TO_MY_PTHREAD_T(&thread_table[slot_idx]);
     return 0;
 }
 
-int my_pthread_cancel(mythread_t thread_id)
+int mypthread_cancel(mythread_t thread_id)
 {
     if (thread_id == MAIN_THREAD_T)
     {
         return EINVAL;
     }
-    
+
     pthread_slot_t *slot = TO_THREAD_SLOT(thread_id);
     thread_arg_t *targ = atomic_load(slot);
     if (targ == NULL)
@@ -335,5 +336,5 @@ mythread_t mythread_self(void)
     {
         return MAIN_THREAD_T;
     }
-    return TO_MYTHREAD_T(targ->slot);
+    return TO_MY_PTHREAD_T(targ->slot);
 }
