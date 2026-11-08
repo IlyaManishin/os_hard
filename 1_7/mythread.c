@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include "mythread.h"
+#include "intercept.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -54,7 +55,6 @@ typedef struct thread_cb
 static thread_cb_t main_cb;
 static thread_cb_t *current = NULL; // NULL до первой инициализации
 static uint64_t slice_end_ns;
-static long (*real_syscall)(long, ...);
 
 static uint64_t now_ns(void)
 {
@@ -406,38 +406,10 @@ int mythread_join(mythread_t thread_id, void **retval)
 }
 
 // Точка переключения контекста: вызывается после системного вызова.
-static void preempt_point(void)
+void preempt_point(void)
 {
     if (current != NULL && now_ns() >= slice_end_ns)
     {
         mythread_yield();
     }
-}
-
-// Переопределение libc syscall(): выполняем настоящий вызов, потом, если квант
-// истёк, отдаём процессор. errno общий для всех mythread, поэтому сохраняем его.
-long syscall(long number, ...)
-{
-    va_list ap;
-    va_start(ap, number);
-    long a1 = va_arg(ap, long);
-    long a2 = va_arg(ap, long);
-    long a3 = va_arg(ap, long);
-    long a4 = va_arg(ap, long);
-    long a5 = va_arg(ap, long);
-    long a6 = va_arg(ap, long);
-    va_end(ap);
-
-    if (real_syscall == NULL)
-    {
-        real_syscall = (long (*)(long, ...))dlsym(RTLD_NEXT, "syscall");
-    }
-
-    long ret = real_syscall(number, a1, a2, a3, a4, a5, a6);
-
-    int saved_errno = errno;
-    preempt_point();
-    errno = saved_errno;
-
-    return ret;
 }
