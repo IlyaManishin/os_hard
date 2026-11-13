@@ -53,7 +53,7 @@ typedef struct thread_cb
 } thread_cb_t;
 
 static thread_cb_t main_cb;
-static thread_cb_t *current = NULL; // NULL до первой инициализации
+static thread_cb_t *current = NULL; 
 static uint64_t slice_end_ns;
 
 static uint64_t now_ns(void)
@@ -192,7 +192,7 @@ static void thread_finish(void)
     }
 
     schedule();
-    abort(); // сюда управление вернуться не должно
+    abort();
 }
 
 static void thread_task(void)
@@ -200,7 +200,7 @@ static void thread_task(void)
     thread_cb_t *self = current;
 
     reap_detached();
-    test_cancel(); // отмена могла прийти до первого запуска
+    test_cancel(); 
     self->retval = self->start_routine(self->arg);
     thread_finish();
 }
@@ -210,7 +210,8 @@ int mythread_create(mythread_t *new_thread,
                     void *(*__start_routine)(void *),
                     void *arg)
 {
-    (void)attr; // всегда NULL
+    (void)attr;
+    
     void *(*start_routine)(void *) = __start_routine;
 
     if (new_thread == NULL || start_routine == NULL)
@@ -226,7 +227,6 @@ int mythread_create(mythread_t *new_thread,
         return ENOMEM;
     }
 
-    // guard page внизу стека
     if (mprotect(stack, LINUX_PAGE_SIZE, PROT_NONE) != 0)
     {
         int err = errno;
@@ -237,7 +237,6 @@ int mythread_create(mythread_t *new_thread,
     uintptr_t stack_top = (uintptr_t)stack + THREAD_STACK_SIZE;
     stack_top -= sizeof(thread_cb_t);
 
-    // 16 byte aligned
     stack_top &= ~((uintptr_t)15);
 
     thread_cb_t *t = (thread_cb_t *)stack_top;
@@ -324,7 +323,6 @@ int mythread_cancel(mythread_t thread_id)
         test_cancel();
     }
 
-    // отложенная отмена: будим спящий/ждущий поток, чтобы он дошёл до точки отмены
     if (t->state == THREAD_BLOCKED)
     {
         t->waiting_for->joiner = NULL;
@@ -392,7 +390,7 @@ int mythread_join(mythread_t thread_id, void **retval)
         current->waiting_for = t;
         current->state = THREAD_BLOCKED;
         schedule();
-        test_cancel(); // join - точка отмены
+        test_cancel();
     }
 
     if (retval != NULL)
@@ -401,11 +399,10 @@ int mythread_join(mythread_t thread_id, void **retval)
     }
 
     list_remove(t);
-    munmap(t->stack, THREAD_STACK_SIZE); // cb лежит на вершине этого же стека
+    munmap(t->stack, THREAD_STACK_SIZE); 
     return 0;
 }
 
-// Точка переключения контекста: вызывается после системного вызова.
 void preempt_point(void)
 {
     if (current != NULL && now_ns() >= slice_end_ns)
