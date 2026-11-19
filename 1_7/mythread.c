@@ -3,9 +3,7 @@
 #include "mythread.h"
 #include "intercept.h"
 
-#include <dlfcn.h>
 #include <errno.h>
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,6 +24,8 @@
 #define TO_MYTHREAD_T(ptr) ((mythread_t)(uintptr_t)(ptr))
 #define TO_THREAD_CB(thread_id) ((thread_cb_t *)(uintptr_t)(thread_id))
 
+#define MYTHREAD_CANCELED ((void *)-1)
+
 typedef enum
 {
     THREAD_READY,
@@ -35,25 +35,45 @@ typedef enum
     THREAD_FINISHED
 } thread_state_t;
 
-typedef struct thread_cb
+typedef struct thread_cb thread_cb_t;
+
+// Что поток исполняет и что вернул
+typedef struct
 {
-    ucontext_t ctx;
-    void *stack;
     void *(*start_routine)(void *);
     void *arg;
     void *retval;
+} thread_entry_t;
+
+// Связи для join
+typedef struct
+{
+    thread_cb_t *joiner;      // кто ждёт нас в join
+    thread_cb_t *waiting_for; // кого ждём мы в join
+} thread_join_t;
+
+// Кольцевой список всех потоков
+typedef struct
+{
+    thread_cb_t *next;
+    thread_cb_t *prev;
+} thread_link_t;
+
+struct thread_cb
+{
+    ucontext_t ctx;
+    void *stack;
     thread_state_t state;
     bool cancel_requested;
     bool detached;
     uint64_t wake_time_ns;
-    struct thread_cb *joiner;      // кто ждёт нас в join
-    struct thread_cb *waiting_for; // кого ждём мы в join
-    struct thread_cb *next;        // кольцевой список всех потоков
-    struct thread_cb *prev;
-} thread_cb_t;
+    thread_entry_t entry;
+    thread_join_t join;
+    thread_link_t link;
+};
 
 static thread_cb_t main_cb;
-static thread_cb_t *current = NULL; 
+static thread_cb_t *current = NULL;
 static uint64_t slice_end_ns;
 
 static uint64_t now_ns(void)
@@ -63,38 +83,55 @@ static uint64_t now_ns(void)
     return (uint64_t)ts.tv_sec * NSEC_PER_SEC + (uint64_t)ts.tv_nsec;
 }
 
-static void mythread_init(void)
+__attribute__((constructor)) static void mythread_init(void)
 {
-    if (current != NULL)
-    {
-        return;
-    }
-
     main_cb.state = THREAD_RUNNING;
-    main_cb.next = &main_cb;
-    main_cb.prev = &main_cb;
+    main_cb.link.next = &main_cb;
+    main_cb.link.prev = &main_cb;
     current = &main_cb;
     slice_end_ns = now_ns() + TIME_SLICE_MS * NSEC_PER_MSEC;
 }
 
 static void list_add_tail(thread_cb_t *t)
 {
-    t->next = &main_cb;
-    t->prev = main_cb.prev;
-    t->prev->next = t;
-    main_cb.prev = t;
+    t->link.next = &main_cb;
+    t->link.prev = main_cb.link.prev;
+    t->link.prev->link.next = t;
+    main_cb.link.prev = t;
 }
 
 static void list_remove(thread_cb_t *t)
 {
-    t->prev->next = t->next;
-    t->next->prev = t->prev;
+    t->link.prev->link.next = t->link.next;
+    t->link.next->link.prev = t->link.prev;
+}
+
+// Возвращает NULL для нулевого id и для главного потока
+static thread_cb_t *target(mythread_t thread_id)
+{
+    thread_cb_t *t = TO_THREAD_CB(thread_id);
+    return t == &main_cb ? NULL : t;
+}
+
+static void reap_detached(void)
+{
+    thread_cb_t *t = main_cb.link.next;
+
+    while (t != &main_cb)
+    {
+        thread_cb_t *next = t->link.next;
+
+        if (t->detached && t->state == THREAD_FINISHED && t != current)
+        {
+            list_remove(t);
+            munmap(t->stack, THREAD_STACK_SIZE);
+        }
+        t = next;
+    }
 }
 
 // Round-robin: ищем следующий готовый поток, начиная со следующего за текущим.
 // Если готовых нет, но есть спящие - реально спим до ближайшего пробуждения.
-static void reap_detached(void);
-
 static thread_cb_t *pick_next(void)
 {
     for (;;)
@@ -105,7 +142,7 @@ static thread_cb_t *pick_next(void)
 
         do
         {
-            t = t->next;
+            t = t->link.next;
 
             if (t->state == THREAD_SLEEPING && t->wake_time_ns <= now)
             {
@@ -152,25 +189,6 @@ static void schedule(void)
     reap_detached();
 }
 
-// Завершившийся detached-поток нельзя освободить из него самого (мы стоим на его стеке),
-// поэтому его стек освобождает любой другой поток после переключения контекста.
-static void reap_detached(void)
-{
-    thread_cb_t *t = main_cb.next;
-
-    while (t != &main_cb)
-    {
-        thread_cb_t *next = t->next;
-
-        if (t->detached && t->state == THREAD_FINISHED && t != current)
-        {
-            list_remove(t);
-            munmap(t->stack, THREAD_STACK_SIZE);
-        }
-        t = next;
-    }
-}
-
 static void test_cancel(void)
 {
     if (current->cancel_requested)
@@ -184,11 +202,11 @@ static void thread_finish(void)
     thread_cb_t *self = current;
 
     self->state = THREAD_FINISHED;
-    if (self->joiner != NULL)
+    if (self->join.joiner != NULL)
     {
-        self->joiner->waiting_for = NULL;
-        self->joiner->state = THREAD_READY;
-        self->joiner = NULL;
+        self->join.joiner->join.waiting_for = NULL;
+        self->join.joiner->state = THREAD_READY;
+        self->join.joiner = NULL;
     }
 
     schedule();
@@ -200,26 +218,22 @@ static void thread_task(void)
     thread_cb_t *self = current;
 
     reap_detached();
-    test_cancel(); 
-    self->retval = self->start_routine(self->arg);
+    test_cancel();
+    self->entry.retval = self->entry.start_routine(self->entry.arg);
     thread_finish();
 }
 
 int mythread_create(mythread_t *new_thread,
                     const mythread_attr_t *attr,
-                    void *(*__start_routine)(void *),
+                    void *(*start_routine)(void *),
                     void *arg)
 {
     (void)attr;
-    
-    void *(*start_routine)(void *) = __start_routine;
 
     if (new_thread == NULL || start_routine == NULL)
     {
         return EINVAL;
     }
-
-    mythread_init();
 
     void *stack = mmap(NULL, THREAD_STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
     if (stack == MAP_FAILED)
@@ -242,8 +256,8 @@ int mythread_create(mythread_t *new_thread,
     thread_cb_t *t = (thread_cb_t *)stack_top;
     memset(t, 0, sizeof(*t));
     t->stack = stack;
-    t->start_routine = start_routine;
-    t->arg = arg;
+    t->entry.start_routine = start_routine;
+    t->entry.arg = arg;
     t->state = THREAD_READY;
 
     if (getcontext(&t->ctx) != 0)
@@ -265,22 +279,18 @@ int mythread_create(mythread_t *new_thread,
 
 void mythread_exit(void *retval)
 {
-    mythread_init();
-
     if (current == &main_cb)
     {
         exit(EXIT_SUCCESS);
     }
 
-    current->retval = retval;
+    current->entry.retval = retval;
     thread_finish();
     abort();
 }
 
 void mythread_yield(void)
 {
-    mythread_init();
-
     current->state = THREAD_READY;
     schedule();
     test_cancel();
@@ -288,8 +298,6 @@ void mythread_yield(void)
 
 void mythread_sleep_ms(unsigned int ms)
 {
-    mythread_init();
-
     current->wake_time_ns = now_ns() + ms * NSEC_PER_MSEC;
     current->state = THREAD_SLEEPING;
     schedule();
@@ -298,16 +306,13 @@ void mythread_sleep_ms(unsigned int ms)
 
 mythread_t mythread_self(void)
 {
-    mythread_init();
     return TO_MYTHREAD_T(current);
 }
 
 int mythread_cancel(mythread_t thread_id)
 {
-    mythread_init();
-
-    thread_cb_t *t = TO_THREAD_CB(thread_id);
-    if (t == NULL || t == &main_cb)
+    thread_cb_t *t = target(thread_id);
+    if (t == NULL)
     {
         return EINVAL;
     }
@@ -325,11 +330,10 @@ int mythread_cancel(mythread_t thread_id)
 
     if (t->state == THREAD_BLOCKED)
     {
-        t->waiting_for->joiner = NULL;
-        t->waiting_for = NULL;
-        t->state = THREAD_READY;
+        t->join.waiting_for->join.joiner = NULL;
+        t->join.waiting_for = NULL;
     }
-    else if (t->state == THREAD_SLEEPING)
+    if (t->state == THREAD_BLOCKED || t->state == THREAD_SLEEPING)
     {
         t->state = THREAD_READY;
     }
@@ -339,14 +343,12 @@ int mythread_cancel(mythread_t thread_id)
 
 int mythread_detach(mythread_t thread_id)
 {
-    mythread_init();
-
-    thread_cb_t *t = TO_THREAD_CB(thread_id);
-    if (t == NULL || t == &main_cb)
+    thread_cb_t *t = target(thread_id);
+    if (t == NULL)
     {
         return EINVAL;
     }
-    if (t->detached || t->joiner != NULL)
+    if (t->detached || t->join.joiner != NULL)
     {
         return EINVAL;
     }
@@ -361,22 +363,17 @@ int mythread_detach(mythread_t thread_id)
 
 int mythread_join(mythread_t thread_id, void **retval)
 {
-    mythread_init();
-
-    thread_cb_t *t = TO_THREAD_CB(thread_id);
-    if (t == NULL || t == &main_cb)
+    thread_cb_t *t = target(thread_id);
+    if (t == NULL)
     {
         return EINVAL;
     }
-    if (t == current)
-    {
-        return EDEADLK;
-    }
-    if (t->detached || t->joiner != NULL)
+    if (t->detached || t->join.joiner != NULL)
     {
         return EINVAL;
     }
-    for (thread_cb_t *w = t; w != NULL; w = w->waiting_for)
+    // Проверка на самоджойн и на цикл ожидания (t == current на первой итерации)
+    for (thread_cb_t *w = t; w != NULL; w = w->join.waiting_for)
     {
         if (w == current)
         {
@@ -386,8 +383,8 @@ int mythread_join(mythread_t thread_id, void **retval)
 
     while (t->state != THREAD_FINISHED)
     {
-        t->joiner = current;
-        current->waiting_for = t;
+        t->join.joiner = current;
+        current->join.waiting_for = t;
         current->state = THREAD_BLOCKED;
         schedule();
         test_cancel();
@@ -395,16 +392,17 @@ int mythread_join(mythread_t thread_id, void **retval)
 
     if (retval != NULL)
     {
-        *retval = t->retval;
+        *retval = t->entry.retval;
     }
 
     list_remove(t);
-    munmap(t->stack, THREAD_STACK_SIZE); 
+    munmap(t->stack, THREAD_STACK_SIZE);
     return 0;
 }
 
 void preempt_point(void)
 {
+    // current == NULL, пока не отработал конструктор (syscall из чужих конструкторов)
     if (current != NULL && now_ns() >= slice_end_ns)
     {
         mythread_yield();

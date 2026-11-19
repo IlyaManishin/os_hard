@@ -41,16 +41,11 @@ int usleep(useconds_t usec)
     if (usec == 0)
     {
         mythread_yield();
-        return 0;
     }
-
-    unsigned int ms = (unsigned int)(usec / 1000);
-    if (ms == 0)
+    else
     {
-        ms = 1;
+        mythread_sleep_ms(usec < 1000 ? 1 : usec / 1000);
     }
-
-    mythread_sleep_ms(ms);
     return 0;
 }
 
@@ -59,9 +54,10 @@ unsigned int sleep(unsigned int seconds)
     if (seconds == 0)
     {
         mythread_yield();
-        return 0;
     }
-
-    mythread_sleep_ms(seconds * 1000);
+    else
+    {
+        mythread_sleep_ms(seconds * 1000);
+    }
     return 0;
 }

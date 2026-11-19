@@ -129,7 +129,6 @@ int main(void)
     printf("sleeper returned: %d\n", (int)(intptr_t)ret_val);
 
     mythread_join(vic, &ret_val);
-    printf("victim canceled: %s\n", ret_val == MYTHREAD_CANCELED ? "yes" : "no");
 
     return EXIT_SUCCESS;
 }

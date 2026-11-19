@@ -2,8 +2,6 @@
 
 #include "mythread_types.h"
 
-#define MYTHREAD_CANCELED ((void *)-1)
-
 int mythread_create(mythread_t *new_thread,
                     const mythread_attr_t *attr,
                     void *(*__start_routine)(void *),
